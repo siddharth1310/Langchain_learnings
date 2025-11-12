@@ -1,16 +1,18 @@
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from dotenv import load_dotenv
-from os import environ, path
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Prompt
-from rich.markdown import Markdown
+from os import environ, path, makedirs
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.vectorstores import InMemoryVectorStore
+import streamlit as st
 
 load_dotenv()
+
+UPLOAD_DIR = "uploaded"
+
+# Create the upload directory if it doesn't exist
+makedirs(UPLOAD_DIR, exist_ok = True)
 
 llm = ChatOpenAI(model = environ.get("CHAT_MODEL_NAME", ""), api_key = environ.get("OPENAI_API_KEY", ""), temperature = 0.3, 
                  seed = 24288, top_p = 0.2)
@@ -40,60 +42,63 @@ You are a response generator. Your task is to use only the relevant information 
 **Your Response:**
 """
 
+def save_uploaded_file(uploaded_file):
+    file_path = path.join(UPLOAD_DIR, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
 
 def chat_conversation(llm_object : ChatOpenAI, system_prompt : str, context_chunks, user_message : str):
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt)])
     messages = prompt.format_messages(context_chunks = context_chunks, user_query = user_message)
     return llm_object.invoke(messages)
 
-def index_creator(embedding_object : ChatOpenAI, file_path : str, user_query : str, top_n : int):
-    console = Console()
-    
-    if not path.exists(file_path):
-        console.print(f"[bold red]File not found: {file_path}[/bold red]")
-        return
-    
+def create_index_from_file(file_path):
     loader = PyPDFLoader(file_path)
     docs = loader.load()
-    
-    if not docs:
-        console.print("[bold red]No documents loaded from the file.[/bold red]")
-        return
-    
     text_splitter = RecursiveCharacterTextSplitter(chunk_size = 1000, chunk_overlap = 200, add_start_index = True)
     all_splits = text_splitter.split_documents(docs)
-    
-    vector_store = InMemoryVectorStore(embedding_object)
+    vector_store = InMemoryVectorStore(embeddings)
     vector_store.add_documents(documents = all_splits)
-    
-    results = vector_store.similarity_search(user_query, k = top_n)
-    final_result = [doc.page_content for doc in results]
-    
-    console.print("[bold green]Retrieved context chunks for the query:[/bold green]")
-    for i, content in enumerate(final_result, 1):
-        console.print(f"[bold yellow]Chunk {i}[/bold yellow]: {content[:200]}...")
-    
-    response = chat_conversation(llm, system_prompt, final_result, user_query)
-    console.print(Panel(Markdown(response.content), title = "[bold cyan]Response[/bold cyan]", expand = False))
+    return vector_store
 
 
 def main():
-    console = Console()
-    console.print(Panel("[bold cyan]Welcome to the Semantic Search App[/bold cyan]", expand = False))
+    st.title("📚 Semantic Search with LLM & LangChain")
+    st.write("Upload a PDF or enter a file path to create an index, then ask questions!")
     
-    file_path = ""
-    while not file_path.strip():
-        file_path = Prompt.ask("[bold yellow]Enter the file path from which you want to create the index[/bold yellow]")
-        if not file_path.strip():
-            console.print("[bold red]Input cannot be empty. Please enter a valid file path.[/bold red]")
+    uploaded_file = st.file_uploader("Upload a PDF", type = ["pdf"])
+    file_path_input = st.text_input("Or enter path of a PDF file")
     
-    user_query = ""
-    while not user_query.strip():
-        user_query = Prompt.ask("[bold yellow]Enter the query for semantic search[/bold yellow]")
-        if not user_query.strip():
-            console.print("[bold red]Input cannot be empty. Please enter a query.[/bold red]")
+    vector_store = None
+    actual_file_path = None
     
-    index_creator(embeddings, file_path, user_query, top_n = 3)
+    if uploaded_file:
+        with st.spinner("Saving and processing uploaded file... ⏳"):
+            actual_file_path = save_uploaded_file(uploaded_file)
+            vector_store = create_index_from_file(actual_file_path)
+        st.success("File processed successfully! You may now enter a query below. ✅")
+    elif file_path_input:
+        if path.exists(file_path_input):
+            with st.spinner("Loading and processing file... ⏳"):
+                actual_file_path = file_path_input
+                vector_store = create_index_from_file(actual_file_path)
+            st.success("File processed successfully! You may now enter a query below. ✅")
+        else:
+            st.error("The file path provided does not exist. Please check and try again.")
+            
+    if vector_store:
+        user_query = st.text_input("Enter your question here")
+        
+        if user_query:
+            with st.spinner("Searching for relevant context and generating response... ⏳"):
+                results = vector_store.similarity_search(user_query, k = 3)
+                context_chunks = [doc.page_content for doc in results]
+                response = chat_conversation(llm, system_prompt, context_chunks, user_query)
+            st.markdown(response.content)
+    else:
+        st.info("Upload a PDF file or enter a valid file path above to get started.")
+
 
 if __name__ == "__main__":
     main()
