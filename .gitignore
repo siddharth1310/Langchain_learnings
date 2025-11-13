@@ -209,3 +209,6 @@ __marimo__/
 
 # Uploaded folder
 /uploaded
+
+# Logs folder
+/logs
